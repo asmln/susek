@@ -1,0 +1,54 @@
+C4Component
+    title Диаграмма компонентов: Сервис хранения изображений
+
+    System_Ext(client, "Клиент", "Загружает и получает изображения")
+    Person_Ext(admin, "Управляющий", "Настраивает, мониторит")
+    
+    Boundary(controllers, "", "") {
+        Component(fileController, "File Controller", "REST Controller", "Сохранение и выдача файлов.")
+        Component(susekController, "Susek Controller", "REST Controller", "Просмотр настроек сервиса.")
+        Component(projectController, "Project Controller", "REST Controller", "Управление проектами.")
+        System(empty1, "", "")
+    }
+
+    Boundary(services, "", "") {
+        Component(fileService, "File Service", "Service", "Сервис файлов.")
+        Component(susekManager, "Susek Manager", "Service", "Управляющий сервисом. Основные настройки. Мониторинг. Задачи по обслуживанию.")
+        Component(projectService, "Project Service", "Service", "Сервис проектов.")
+        System(empty2, "", "")
+        
+        Component(fileStorage, "File Storage", "Service", "Сервис хранилища файлов: сохраняет файлы на файловом хранилище.")
+        Component(storageFileRepo, "Storage File Repository", "Repository", "Репозиторий записей о файлах хранилища.")
+        Component(projectFileRepo, "Project File Repository", "Repository", "Репозиторий записей о файлах проекта.")
+        Component(projectRepo, "Project Repository", "Repository", "Репозиторий записей о проектах.")
+    }
+
+    Boundary(data, "", "") {
+        ContainerDb(storage, "Диск", "NVMe SSD / Local FS", "Хранит загруженные изображения")
+        ContainerDb(database, "База Данных", "SQL Database", "Хранит проекты, изображения проектов, метаданные изображений, ссылки на файлы.")
+    }
+
+    Rel(susekController, susekManager, "Использует")
+    Rel(projectController, projectService, "Использует")
+    Rel(fileController, fileService, "Использует")
+
+    Rel(projectService, projectRepo, "Использует")
+    Rel(fileService, projectFileRepo, "Использует")
+    Rel(fileService, storageFileRepo, "Использует")
+    Rel(fileService, fileStorage, "Использует")
+    Rel(susekManager, fileStorage, "Использует")
+
+    Rel(fileStorage, storage, "Пишет/читает", "поток байтов")
+    Rel(projectRepo, database, "Пишет/читает", "JDBC")
+    Rel(projectFileRepo, database, "Пишет/читает", "JDBC")
+    Rel(storageFileRepo, database, "Пишет/читает", "JDBC")
+
+    Rel(admin, susekController, "Управляет", "HTTPS / REST API")
+    Rel(admin, projectController, "Управляет", "HTTPS / REST API")
+    Rel(admin, fileController, "Управляет", "HTTPS / REST API")
+
+    Rel(client, fileController, "Загружает и запрашивает изображения", "HTTPS / REST API")
+
+    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
+    UpdateElementStyle(empty1, $bgColor="#ffffff", $fontColor="#ffffff", $borderColor="#ffffff")
+    UpdateElementStyle(empty2, $bgColor="#ffffff", $fontColor="#ffffff", $borderColor="#ffffff")

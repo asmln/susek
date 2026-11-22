@@ -1,0 +1,23 @@
+C4Container
+    title Диаграмма контейнеров: Сервис хранения изображений
+
+    System_Ext(client, "Клиент", "Загружает и получает изображения")
+    Person_Ext(admin, "Управляющий", "Настраивает, мониторит")
+    
+    Boundary(b0, "", "") {
+        Container(susek, "Сусек", "Spring Boot", "Принимает изображения, сохраняет файлы на диск и записывает метаданные. Отдаёт изображения.")
+        System(empty1, "", "")
+    }
+
+    Boundary(b1, "", "") {
+        ContainerDb(database, "База Данных", "SQL Database", "Хранит метаданные проектов, изображений проектов, ссылки на файлы.")
+        ContainerDb(storage, "Диск", "SSD / Local FS / S3", "Хранит загруженные изображения")
+    }
+
+    Rel(client, susek, "Загружает и запрашивает изображения", "HTTPS / REST API")
+    Rel(admin, susek, "Управляет", "HTTPS / REST API")
+    Rel(susek, database, "Данные проектов и изображений")
+    Rel(susek, storage, "Изображения")
+
+    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="2")
+    UpdateElementStyle(empty1, $bgColor="#ffffff", $fontColor="#ffffff", $borderColor="#ffffff")

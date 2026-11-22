@@ -1,0 +1,13 @@
+C4Context
+    title Диаграмма контекста: Сервис хранения изображений
+    Enterprise_Boundary(b0, "CompanyBoundary") {
+        System_Ext(client, "Клиент", "Загружает и получает изображения")
+        Person_Ext(admin, "Управляющий", "Настраивает, мониторит")
+        
+        System(susek, "Сусек", "Принимает изображения, сохраняет файлы на диск и записывает метаданные. Отдаёт изображения.")
+    }
+
+    Rel_D(client, susek, "Загружает и запрашивает изображения", "HTTPS / REST API")
+    Rel_L(admin, susek, "Управляет", "HTTPS / REST API")
+
+    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
