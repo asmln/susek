@@ -1,0 +1,1186 @@
+openapi: 3.2.0
+jsonSchemaDialect: https://spec.openapis.org/oas/3.2/dialect/2026-02-26
+info:
+  title: Сусек API
+  version: 1.0.0
+  license:
+    name: Internal use only
+  summary: Файловое хранилище с бизнес-URL, дедупликацией и логическим разделением по проектам
+  description: |
+    Сервис централизованного хранения файлов для внутренних сервисов.
+
+    ## Модель данных
+
+    - **Project** - сервис-владелец файлов (например, «сервис объявлений»).
+      Идентифицируется строковым `uid`; в путях API он обозначается `{projectUid}`.
+      Статусы: ACTIVE, INACTIVE, DELETED.
+    - **ProjectFile** (бизнес-уровень) - ссылка: проект + бизнес-URL + параметры
+      отдачи (filename, content-type, content-disposition, cache-control) + метаданные.
+      В API представлена схемой `File`.
+    - **StorageFile** (физический уровень) - файл на диске: путь, размер, checksum
+      (SHA-256), content-type, определённый сервисом по magic bytes. Один блоб может
+      обслуживать много ссылок: повторная загрузка контента с тем же checksum не
+      записывает файл заново (дедупликация).
+
+    ## Бизнес-URL
+
+    Бизнес-URL состоит из базовой части (`route` - константное имя типа ссылки,
+    например `getUserImage`, без слэшей в начале и конце) и карты параметров (query-параметры,
+    например `?id=123`). Сервер канонизирует параметры в ключ `params_key`:
+    ключи сортируются лексикографически, значения percent-декодируются и
+    приводятся к строкам; дубликаты ключей и пустые имена параметров отклоняются
+    (400). Ссылка уникальна в пределах проекта: `(projectUid, route, params_key)`.
+
+    ## Статусы ссылки (File.status)
+
+    - ACTIVE - видна, контент отдаётся;
+    - INACTIVE - скрыта: отдача контента отвечает 404 («файла нет»), метаданные
+      доступны управляющим эндпоинтам; возвращается PATCH-ем `{"status":"ACTIVE"}`;
+    - DELETED - мягкое удаление (заполняется `deletedAt`); контент отвечает 410;
+      URL освобождается и может быть занят новой загрузкой. Физический блоб удаляет
+      GC после retention-периода, когда на него не осталось ссылок.
+
+    ## Идемпотентность и конфликты при загрузке
+
+    - бизнес-URL свободен → 201 Created;
+    - бизнес-URL занят, checksum совпал → 200 OK (идемпотентный повтор, ничего
+      не меняется);
+    - бизнес-URL занят, checksum другой → 409 Conflict с описанием существующей
+      ссылки; замена выполняется PUT-ом на бизнес-URL (опционально с If-Match).
+
+    ## Отдача контента и кэширование
+
+    Эндпоинты отдачи работают за nginx: сервис стримит файл напрямую либо отвечает
+    `X-Accel-Redirect` (тогда тело формирует nginx). ETag равен checksum блоба,
+    поэтому условные запросы If-None-Match работают без дополнительных механизмов.
+    Cache-Control задаётся на ссылке.
+
+    ## Ошибки
+
+    Все ошибки - схема `Error`: `{code, message}`. Машинные коды
+    перечислены в описаниях ответов 400/404/409/410/412.
+servers:
+  - url: https://susek.asmln.internal/api/v1
+    description: Прод-контур (за nginx)
+  - url: http://localhost:8080/api/v1
+    description: Локальная разработка
+tags:
+  - name: projects
+    description: Проекты-владельцы файлов
+  - name: files
+    description: Загрузка, отдача и жизненный цикл файлов
+paths:
+  /projects:
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: Список проектов
+      description: Постраничный список проектов, сортировка по createdAt по возрастанию.
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список проектов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectList'
+              examples:
+                ads:
+                  $ref: '#/components/examples/ProjectAdsList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: Создание проекта
+      description: |
+        Создаёт проект. uid уникален и неизменяем - он участвует в бизнес-URL
+        (/files/{projectUid}/...) и в генерируемых ссылках.
+      requestBody:
+        required: true
+        description: Параметры нового проекта
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectCreate'
+      responses:
+        '201':
+          description: Проект создан
+          headers:
+            Location:
+              $ref: '#/components/headers/LocationProject'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              examples:
+                ads:
+                  $ref: '#/components/examples/ProjectAds'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/ConflictPidTaken'
+  /projects/{projectUid}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectUid'
+    get:
+      tags: [projects]
+      operationId: getProject
+      summary: Получение проекта по projectUid
+      responses:
+        '200':
+          description: Проект найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              examples:
+                ads:
+                  $ref: '#/components/examples/ProjectAds'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    patch:
+      tags: [projects]
+      operationId: updateProject
+      summary: Изменение проекта (переименование, включение/выключение)
+      description: |
+        uid не изменяется. Статус DELETED устанавливается только DELETE-эндпоинтом;
+        перевести удалённый проект обратно в ACTIVE нельзя.
+      requestBody:
+        required: true
+        description: Новые параметры для проекта
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdate'
+            examples:
+              notes:
+                $ref: '#/components/examples/ProjectNotes'
+      responses:
+        '200':
+          description: Проект обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              examples:
+                ads:
+                  $ref: '#/components/examples/ProjectAds'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      tags: [projects]
+      operationId: deleteProject
+      summary: Удаление проекта (мягкое)
+      description: |
+        Переводит проект в DELETED; идемпотентен - повторный вызов тоже возвращает 204.
+        Фоновый джоб помечает DELETED все ссылки проекта, после чего файловые запросы
+        проекта отвечают 410. Физическую зачистку выполняет GC.
+      responses:
+        '204':
+          description: Проект помечен удалённым (или был удалён ранее)
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /files:
+    post:
+      tags: [files]
+      operationId: uploadFile
+      summary: Загрузка файла и создание ссылки
+      description: |
+        Сохраняет контент (StorageFile) и создаёт бизнес-ссылку (ProjectFile).
+        Контент дедуплицируется: если блоб с таким checksum уже есть, новый файл
+        на диск не пишется. Поведение при занятом бизнес-URL - см. ответы 200 и 409.
+        Поля params и metadata передаются JSON-строками (multipart-поле всегда
+        строка); все значения карты параметров приводятся к строкам.
+        Content-Disposition по умолчанию - INLINE.
+      requestBody:
+        required: true
+        description: Загружаемый файл и его метаданные
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequest'
+            examples:
+              avatar:
+                value:
+                  file: avatar.jpg
+                  projectUid: ads
+                  route: getUserImage
+                  params: '{"id":"123"}'
+                  filename: avatar.jpg
+                  contentDisposition: INLINE
+                  metadata: '{"uploadedBy":"user-77"}'
+      responses:
+        '201':
+          description: Файл загружен
+          headers:
+            Location:
+              $ref: '#/components/headers/LocationFile'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '200':
+          description: |
+            Ссылка с таким (projectUid, route, params_key) уже существует и checksum
+            совпадает - идемпотентный повтор, состояние не изменилось. Клиент может
+            безопасно ретраить загрузку.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictUrlTaken'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /files/{projectFileUid}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectFileUid'
+    get:
+      tags: [files]
+      operationId: downloadFileByUid
+      summary: Получение файла по uuid (контент)
+      description: |
+        Отдаёт контент блоба с заголовками отдачи ссылки. INACTIVE - 404 (файл
+        скрыт), DELETED - 410. ETag равен checksum блоба: передайте If-None-Match
+        из прошлого ответа - получите 304.
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Контент файла
+          headers:
+            X-Project-File-Uid:
+              $ref: '#/components/headers/XProjectFileUid'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Контент не изменился (If-None-Match совпал с ETag)
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    head:
+      tags: [files]
+      operationId: headFileByUid
+      summary: Проверка файла по uuid (без тела)
+      description: Те же заголовки, что у GET контента, без тела ответа.
+      responses:
+        '200':
+          description: Файл существует и активен
+          headers:
+            X-Project-File-Uid:
+              $ref: '#/components/headers/XProjectFileUid'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    patch:
+      tags: [files]
+      operationId: updateFile
+      summary: Изменение ссылки (скрытие, возврат, параметры отдачи)
+      description: |
+        Скрытие файла: {"status":"INACTIVE"} - контент начнёт отвечать 404.
+        Возврат: {"status":"ACTIVE"}. Статус DELETED через PATCH недоступен -
+        используйте DELETE. metadata заменяется целиком; contentType: null
+        сбрасывает переопределение (используется определённый для блоба).
+      requestBody:
+        required: true
+        description: Новые метаданные для файла
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileUpdate'
+            examples:
+              avatar2:
+                $ref: '#/components/examples/FileAvatar2'
+      responses:
+        '200':
+          description: Ссылка обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      tags: [files]
+      operationId: deleteFile
+      summary: Удаление ссылки (мягкое)
+      description: |
+        Переводит ссылку в DELETED, заполняет deletedAt; контент отвечает 410,
+        бизнес-URL освобождается. Идемпотентно: повторный DELETE на уже удалённую
+        ссылку тоже возвращает 204. Блоб чистит GC после retention-периода, когда
+        на него не осталось активных ссылок.
+      responses:
+        '204':
+          description: Ссылка помечена удалённой (или была удалена ранее)
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /files/{projectFileUid}/metadata:
+    parameters:
+      - $ref: '#/components/parameters/ProjectFileUid'
+    get:
+      tags: [files]
+      operationId: getFileMetadata
+      summary: Метаданные файла по uuid
+      description: |
+        Управляющий эндпоинт: возвращает ссылку в любом статусе, кроме DELETED
+        (410); поле status сообщит, если файл скрыт (INACTIVE).
+      responses:
+        '200':
+          description: Метаданные ссылки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /files/{projectUid}/{businessUrl}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectUid'
+      - $ref: '#/components/parameters/BusinessUrl'
+    get:
+      tags: [files]
+      operationId: downloadFileByBusinessUrl
+      summary: Получение файла по бизнес-URL (контент)
+      description: |
+        Основной эндпоинт отдачи: nginx проксирует сюда запросы вида
+        /files/{projectUid}/{route}?... Query-параметры передаются как есть и
+        канонизируются сервером в params_key (см. описание info); в OpenAPI они
+        не объявляются по отдельности, потому что карта параметров произвольная -
+        кодогенераторам учитывать это при формировании запроса.
+        X-Project-File-Uid в ответе - идентификатор
+        ссылки для последующего управления (PATCH/DELETE).
+      security: []
+      x-query-passthrough: true
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Контент файла
+          headers:
+            X-Project-File-Uid:
+              $ref: '#/components/headers/XProjectFileUid'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Контент не изменился (If-None-Match совпал с ETag)
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    head:
+      tags: [files]
+      operationId: headFileByBusinessUrl
+      summary: Проверка файла по бизнес-URL (без тела)
+      description: Те же заголовки, что у GET контента, без тела ответа.
+      security: []
+      x-query-passthrough: true
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Файл существует и активен
+          headers:
+            X-Project-File-Uid:
+              $ref: '#/components/headers/XProjectFileUid'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    put:
+      tags: [files]
+      operationId: replaceFileByBusinessUrl
+      summary: Создание или замена файла по бизнес-URL (upsert)
+      description: |
+        Кладёт файл за указанной ссылкой: ссылки нет - создаёт её (201), есть -
+        заменяет привязанный блоб (200). Старый блоб теряет ссылку и позже
+        удаляется GC, если на него не осталось других ссылок. Query-параметры
+        определяют карту параметров ссылки. Параметры отдачи передаются заголовками
+        X-File-Filename, X-Content-Type, X-Disposition, X-Cache-Control (аналоги
+        полей POST /files). If-Match (ETag текущего блоба, checksum в кавычках) -
+        заменить только если контент не менялся с момента чтения; иначе 412.
+      x-query-passthrough: true
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: ETag текущего блоба (checksum в кавычках)
+          schema:
+            type: string
+        - name: X-File-Filename
+          in: header
+          required: false
+          description: |
+              Имя файла для формирования заголовка Content-Disposition при отдаче.
+              Должно передаваться в формате URL-encoded (percent-encoded UTF-8), чтобы
+              избежать проблем с не-ASCII символами (кириллицей, пробелами, спецсимволами)
+              в HTTP-заголовках. Сервер автоматически декодирует значение.
+          example: "%D0%BE%D1%82%D1%87%D0%B5%D1%82%202026.pdf"
+          schema:
+            type: string
+            maxLength: 255
+        - name: X-Content-Type
+          in: header
+          required: false
+          description: Переопределение Content-Type для отдачи
+          schema:
+            type: string
+            maxLength: 128
+        - name: X-Disposition
+          in: header
+          required: false
+          description: INLINE (по умолчанию) или ATTACHMENT
+          schema:
+            $ref: '#/components/schemas/ContentDisposition'
+        - name: X-Cache-Control
+          in: header
+          required: false
+          description: Значение Cache-Control для отдачи
+          schema:
+            type: string
+            maxLength: 256
+      requestBody:
+        required: true
+        description: Файл на замену
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Файл заменён (ссылка существовала)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '201':
+          description: Ссылка создана (бизнес-URL был свободен)
+          headers:
+            Location:
+              $ref: '#/components/headers/LocationFile'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+              examples:
+                avatar:
+                  $ref: '#/components/examples/FileAvatar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '412':
+          description: Контент ссылки изменился с момента чтения (If-Match не совпал)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                mismatch:
+                  value:
+                    code: CHECKSUM_MISMATCH
+                    message: 'Контент ссылки изменился; повторите GET и PUT с актуальным If-Match'
+components:
+  parameters:
+    ProjectUid:
+      name: projectUid
+      in: path
+      required: true
+      description: Строковый идентификатор проекта (uid проекта)
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+      example: ads
+    ProjectFileUid:
+      name: projectFileUid
+      in: path
+      required: true
+      description: Идентификатор ссылки (ProjectFile)
+      schema:
+        type: string
+        format: uuid
+      example: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a'
+    BusinessUrl:
+      name: businessUrl
+      in: path
+      required: true
+      description: |
+        Базовая часть бизнес-URL (route) - константное имя типа ссылки без слэшей в начале и конце.
+        Карта параметров передаётся в строке запроса. Пример: запрос
+        GET /files/ads/getUserImage/file?id=123 соответствует пути
+        /files/{projectUid}/{*businessUrl} с projectUid=ads, businessUrl=getUserImage/file
+        и query ?id=123.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[^/]+(?:/[^/]+)*$'
+      example: getUserImage
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Фильтр по статусу проекта
+      schema:
+        $ref: '#/components/schemas/ProjectStatus'
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Размер страницы (1..100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Сколько записей пропустить
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: ETag из предыдущего ответа (checksum блоба в кавычках)
+      schema:
+        type: string
+  headers:
+    LocationFile:
+      description: URL метаданных загруженного файла
+      schema:
+        type: string
+      example: /api/v1/files/0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a
+    LocationProject:
+      description: URL созданного проекта
+      schema:
+        type: string
+      example: /api/v1/projects/ads
+    XProjectFileUid:
+      description: Идентификатор ссылки (projectFileUid)
+      schema:
+        type: string
+        format: uuid
+      example: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a'
+    ETag:
+      description: Checksum блоба (hex SHA-256) в двойных кавычках
+      schema:
+        type: string
+      example: '"9f2c1d4e6a7b8c0d1e2f3a4b5c6d7e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9"'
+    LastModified:
+      description: Время последнего изменения ссылки (updatedAt)
+      schema:
+        type: string
+        format: date-time
+      example: '2026-11-19T14:03:11Z'
+    CacheControl:
+      description: Политика кэширования ссылки
+      schema:
+        type: string
+      example: 'private, max-age=60'
+    ContentDisposition:
+      description: "inline либо attachment; имя файла - filename* (RFC 5987, UTF-8)"
+      schema:
+        type: string
+      example: "inline; filename*=UTF-8''avatar.jpg"
+  schemas:
+    ProjectStatus:
+      type: string
+      description: |
+        ACTIVE - активен; INACTIVE - выключен (файловые запросы отвечают 404);
+        DELETED - удалён (файловые запросы отвечают 410).
+      enum: [ACTIVE, INACTIVE, DELETED]
+      example: ACTIVE
+    FileStatus:
+      type: string
+      description: |
+        ACTIVE - видна; INACTIVE - скрыта (контент отвечает 404); DELETED -
+        удалена (контент отвечает 410, URL свободен). DELETED устанавливается
+        только DELETE-эндпоинтом.
+      enum: [ACTIVE, INACTIVE, DELETED]
+      example: ACTIVE
+    ContentDisposition:
+      type: string
+      description: INLINE - показать в браузере; ATTACHMENT - скачать как файл
+      enum: [INLINE, ATTACHMENT]
+      default: INLINE
+    Project:
+      type: object
+      description: |
+        Проект - пространство для какого-либо внешнего сервиса, 
+        в рамках которого должны быть уникальны ссылки
+      required: [uid, name, status, createdAt, updatedAt]
+      properties:
+        uid:
+          type: string
+          description: Идентификатор проекта; в путях API - {projectUid}
+          example: 'ads'
+        name:
+          type: string
+          description: Понятное оператору имя
+          example: 'Сервис объявлений'
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+        deletedAt:
+          type: [string, 'null']
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+    ProjectCreate:
+      type: object
+      description: |
+        Новый проект - пространство для какого-либо внешнего сервиса, 
+        в рамках которого должны быть уникальны ссылки
+      required: [uid, name]
+      additionalProperties: false
+      properties:
+        uid:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+          description: Уникальный неизменяемый строковый идентификатор
+          example: ads
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: сервис объявлений
+    ProjectUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: Статус DELETED через PATCH недоступен - только DELETE-эндпоинт
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: 'Сервис заметок'
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+          example: 'ACTIVE'
+    ProjectList:
+      type: object
+      description: Проекты
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+          example:
+            - uid: ads
+              name: Сервис объявлений
+              status: ACTIVE
+              createdAt: '2026-11-24T01:23:00.123Z'
+              updatedAt: '2026-11-24T01:23:00.123Z'
+              deletedAt: null
+            - uid: billing
+              name: Платёжный шлюз
+              status: INACTIVE
+              createdAt: '2026-10-15T14:00:00.000Z'
+              updatedAt: '2026-11-20T09:30:00.500Z'
+              deletedAt: '2026-11-20T09:30:00.500Z'    
+        total:
+          type: integer
+          format: int64
+          description: Всего проектов, удовлетворяющих фильтру
+          example: 2
+        limit:
+          type: integer
+          example: 10
+        offset:
+          type: integer
+          example: 0
+    StorageFile:
+      type: object
+      description: Физический файл (StorageFile); один файл может обслуживать много ссылок
+      required: [storageFileUid, size, checksum, checksumAlg, contentType, createdAt]
+      properties:
+        storageFileUid:
+          type: string
+          format: uuid
+        size:
+          type: integer
+          format: int64
+          description: Размер в байтах
+        checksum:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256, hex
+        checksumAlg:
+          type: string
+          example: SHA256
+        contentType:
+          type: [string, 'null']
+          description: Определён сервисом по magic bytes (не по расширению)
+        createdAt:
+          type: string
+          format: date-time
+    File:
+      type: object
+      description: Бизнес-ссылка на файл (ProjectFile) вместе со сведениями о блобе
+      required: [projectFileUid, projectUid, route, params, businessUrl, contentType, contentDisposition, metadata, status, revision, createdAt, updatedAt, storage]
+      properties:
+        projectFileUid:
+          type: string
+          format: uuid
+          example: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a'
+        projectUid:
+          type: string
+          example: 'ads'
+        route:
+          type: string
+          description: Базовая часть бизнес-URL
+          example: 'note/image/prev'
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Карта параметров (значения - строки)
+          examples:
+            - id: '123'
+        businessUrl:
+          type: string
+          description: 'Канонический бизнес-URL: /{route}?{отсортированные параметры}'
+          example: /getUserImage?id=123
+        filename:
+          type: [string, 'null']
+          description: Имя для Content-Disposition
+          example: 'cat.jpg'
+        contentType:
+          type: string
+          description: Эффективный Content-Type отдачи (переопределение или определённый для блоба)
+          example: 'image/jpeg'
+        contectDisposition:
+          $ref: '#/components/schemas/ContentDisposition'
+        cacheControl:
+          type: [string, 'null']
+          description: Значение Cache-Control для отдачи; null - умолчание сервиса
+          example: 'private, max-age=60'  
+        metadata:
+          type: object
+          additionalProperties: {}
+          description: Произвольные метаданные, выдаются при GET
+          example: {"sign": "кошечка"}
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        revision:
+          type: integer
+          format: int64
+          description: Увеличивается при каждой замене файла за ссылкой (PUT)
+          example: 0
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+        deletedAt:
+          type: [string, 'null']
+          format: date-time
+          example: '2026-11-24T01:23:00.123Z'
+        storage:
+          $ref: '#/components/schemas/StorageFile'
+          example:
+            $ref: '#/components/examples/StorageFileAvatar'
+    FileUploadRequest:
+      type: object
+      description: Добавление файла
+      required: [file, projectUid, route]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: Содержимое файла
+          example: "<binary>"
+        projectUid:
+          type: string
+          description: Проект, к которому привязывается ссылка
+          example: ads
+        route:
+          type: string
+          maxLength: 128
+          description: Базовая часть бизнес-URL
+          example: getUserImage
+        params:
+          type: string
+          description: |
+            Карта параметров бизнес-URL - JSON-строка, например {"id":"123"}.
+            Все значения приводятся к строкам; дубликаты ключей и пустые имена
+            отклоняются (400). Канонизируется в params_key (сортировка ключей,
+            percent-decoding).
+          example: '{"id":"123"}'
+          default: '{}'
+        filename:
+          type: string
+          maxLength: 255
+          description: Имя для Content-Disposition; по умолчанию - имя загруженного файла
+          example: avatar.jpg
+        contentType:
+          type: string
+          maxLength: 128
+          description: Переопределение Content-Type для отдачи; по умолчанию - определённый по magic bytes
+          example: image/jpeg
+        contentDisposition:
+          $ref: '#/components/schemas/ContentDisposition'
+        cacheControl:
+          type: string
+          maxLength: 256
+          description: Значение Cache-Control для отдачи
+          example: 'private, max-age=60'
+        metadata:
+          type: string
+          description: Произвольные метаданные - JSON-строка
+          example: '{"uploadedBy":"user-77"}'
+    FileUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: |
+        Частичное обновление ссылки. Скрытие - {"status":"INACTIVE"}, возврат -
+        {"status":"ACTIVE"}; DELETED - только через DELETE. metadata заменяется
+        целиком; contentType: null сбрасывает переопределение.
+      properties:
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        filename:
+          type: [string, 'null']
+          maxLength: 255
+          example: "cat.jpg"
+        contentType:
+          type: [string, 'null']
+          maxLength: 128
+          description: null - сбросить переопределение
+          example: 'image/jpeg'
+        contentDisposition:
+          $ref: '#/components/schemas/ContentDisposition'
+        cacheControl:
+          type: [string, 'null']
+          maxLength: 256
+          example: 'private, max-age=60'
+        metadata:
+          type: object
+          additionalProperties: {}
+          description: Полная замена метаданных
+          example: {"sign": "котик"}
+    Error:
+      type: object
+      description: Ошибка, возвращаемая сервисом
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Машинный код ошибки
+          example: INVALID_JSON
+        message:
+          type: string
+          description: Человекочитаемое описание
+          example: 'metadata не являются корректным JSON-объектом'
+    ErrorUrlTaken:
+      description: Ошибка в бизнес-URL
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          required: [existing]
+          properties:
+            existing:
+              type: object
+              description: Текущая ссылка за этим бизнес-URL
+              required: [projectFileUid, checksum, size, updatedAt, revision]
+              properties:
+                projectFileUid:
+                  type: string
+                  format: uuid
+                checksum:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+                size:
+                  type: integer
+                  format: int64
+                updatedAt:
+                  type: string
+                  format: date-time
+                revision:
+                  type: integer
+                  format: int64
+  responses:
+    BadRequest:
+      description: |
+        Некорректный запрос. Коды: DUPLICATE_PARAM - query-параметр встречается
+        более одного раза; INVALID_ROUTE - route содержит недопустимые символы
+        (слэши в начале или конце); INVALID_JSON - params/metadata не являются корректным JSON-объектом;
+        VALIDATION_FAILED - прочие ошибки валидации.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            duplicateParam:
+              value:
+                code: DUPLICATE_PARAM
+                message: 'Параметр "id" встречается в запросе более одного раза'
+            invalidRoute:
+              value:
+                code: INVALID_ROUTE
+                message: 'route не должен содержать "/" в начале или конце'
+            invalidJson:
+              value:
+                code: INVALID_JSON
+                message: 'params должен быть корректным JSON-объектом'
+    NotFound:
+      description: |
+        Не найдено. Коды: PROJECT_NOT_FOUND - проект не существует; FILE_NOT_FOUND -
+        ссылка не существует или скрыта (INACTIVE; отдача контента отвечает так же,
+        как для несуществующего файла).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            projectNotFound:
+              value:
+                code: PROJECT_NOT_FOUND
+                message: 'Проект "ads" не найден'
+            fileNotFound:
+              value:
+                code: FILE_NOT_FOUND
+                message: 'Файл не найден или скрыт'
+    Gone:
+      description: |
+        Ресурс удалён. Коды: PROJECT_DELETED - проект удалён (все его файловые
+        запросы отвечают 410); FILE_DELETED - ссылка удалена (до истечения
+        retention-периода; после физической зачистки может отвечать 404).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            projectDeleted:
+              value:
+                code: PROJECT_DELETED
+                message: 'Проект "ads" удалён'
+            fileDeleted:
+              value:
+                code: FILE_DELETED
+                message: 'Файл удалён'
+    ConflictUrlTaken:
+      description: Бизнес-URL занят ссылкой с другим контентом (checksum различается)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorUrlTaken'
+          examples:
+            urlTaken:
+              $ref: '#/components/examples/ErrorUrlTaken'
+    ConflictPidTaken:
+      description: Проект с таким pid уже существует
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            pidTaken:
+              value:
+                code: PID_TAKEN
+                message: 'Проект с pid "ads" уже существует'
+  examples:
+    ProjectAds:
+      description: Пример проекта
+      value:
+        uid: ads
+        name: Сервис объявлений
+        status: ACTIVE
+        createdAt: '2026-01-12T09:15:00Z'
+        updatedAt: '2026-01-12T09:15:00Z'
+        deletedAt: null
+    ProjectNotes:
+      description: Пример для изменения проекта
+      value:
+        name: Сервис заметок
+        status: ACTIVE
+    ProjectAdsList:
+      description: Пример списка проектов
+      value:
+        total: 1
+        limit: 20
+        offset: 0
+        items:
+          - uid: ads
+            name: Сервис объявлений
+            status: ACTIVE
+            createdAt: '2026-01-12T09:15:00Z'
+            updatedAt: '2026-01-12T09:15:00Z'
+            deletedAt: null
+          - uid: notes
+            name: Сервис заметок
+            status: ACTIVE
+            createdAt: '2026-01-12T09:15:00Z'
+            updatedAt: '2026-01-12T09:15:00Z'
+            deletedAt: null
+    FileAvatar:
+      description: Пример метаданных файла
+      value:
+        projectFileUid: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a'
+        projectUid: ads
+        route: getUserImage
+        params:
+          id: '123'
+        businessUrl: /getUserImage?id=123
+        filename: avatar.jpg
+        contentType: image/jpeg
+        contentTypeOverride: null
+        contentDisposition: INLINE
+        cacheControl: 'private, max-age=60'
+        metadata:
+          uploadedBy: user-77
+        status: ACTIVE
+        revision: 3
+        createdAt: '2026-11-19T14:03:11Z'
+        updatedAt: '2026-11-19T14:03:11Z'
+        deletedAt: null
+        storage:
+          storageFileUid: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0b'
+          size: 153402
+          checksum: '9f2c1d4e6a7b8c0d1e2f3a4b5c6d7e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9'
+          checksumAlg: SHA256
+          contentType: image/jpeg
+          createdAt: '2026-11-19T14:03:11.123Z'
+    FileAvatar2:
+      description: Новая метадата для существующего в проекте файла
+      value:
+        status: INACTIVE
+        filename: avatar2.jpg
+        contentType: image/jpeg
+        contentDisposition: ATTACHMENT
+        cacheControl: 'private, max-age=60'
+        metadata:
+          sine: 'мой самый лучший аватар'
+    StorageFileAvatar:
+      description: Пример физического файла (StorageFile)
+      value:
+        storageFileUid: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0b'
+        size: 153402
+        checksum: '9f2c1d4e6a7b8c0d1e2f3a4b5c6d7e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9'
+        checksumAlg: SHA256
+        contentType: image/jpeg
+        createdAt: '2026-11-19T14:03:11.123Z'
+    ErrorUrlTaken:
+      description: Ошибка в случае неуникального бизнес-URL
+      value:
+        code: URL_TAKEN
+        message: 'Бизнес-URL /getUserImage?id=123 уже занят файлом с другим контентом'
+        existing:
+          projectFileUid: '0192b1f0-8a3c-7d2e-9f4a-5b6c7d8e9f0a'
+          checksum: '3f7a9b0c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e'
+          size: 98711
+          updatedAt: '2026-11-01T10:00:00Z'
+          revision: 2
