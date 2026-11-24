@@ -7,3 +7,4 @@ options:
 map:
   types:
     - type: string:uuid => java.util.UUID
+    - type: FileMetadata => tools.jackson.databind.JsonNode  

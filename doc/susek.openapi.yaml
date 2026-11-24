@@ -216,7 +216,8 @@ paths:
                   params: '{"id":"123"}'
                   filename: avatar.jpg
                   contentDisposition: INLINE
-                  metadata: '{"uploadedBy":"user-77"}'
+                  metadata: 
+                    uploadedBy: user-77
       responses:
         '201':
           description: Файл загружен
@@ -863,10 +864,7 @@ components:
           description: Значение Cache-Control для отдачи; null - умолчание сервиса
           example: 'private, max-age=60'  
         metadata:
-          type: object
-          additionalProperties: {}
-          description: Произвольные метаданные, выдаются при GET
-          example: {"sign": "кошечка"}
+          $ref: '#/components/schemas/FileMetadata'
         status:
           $ref: '#/components/schemas/FileStatus'
         revision:
@@ -936,9 +934,7 @@ components:
           description: Значение Cache-Control для отдачи
           example: 'private, max-age=60'
         metadata:
-          type: string
-          description: Произвольные метаданные - JSON-строка
-          example: '{"uploadedBy":"user-77"}'
+          $ref: '#/components/schemas/FileMetadata'
     FileUpdate:
       type: object
       minProperties: 1
@@ -966,10 +962,13 @@ components:
           maxLength: 256
           example: 'private, max-age=60'
         metadata:
+          $ref: '#/components/schemas/FileMetadata'
+    FileMetadata:
           type: object
-          additionalProperties: {}
-          description: Полная замена метаданных
-          example: {"sign": "котик"}
+          additionalProperties: true
+          description: Произвольные метаданные
+          example:
+            sign: кошечка
     Error:
       type: object
       description: Ошибка, возвращаемая сервисом
@@ -1161,7 +1160,7 @@ components:
         contentDisposition: ATTACHMENT
         cacheControl: 'private, max-age=60'
         metadata:
-          sine: 'мой самый лучший аватар'
+          sign: 'мой самый лучший аватар'
     StorageFileAvatar:
       description: Пример физического файла (StorageFile)
       value:
