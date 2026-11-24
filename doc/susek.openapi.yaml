@@ -213,7 +213,8 @@ paths:
                   file: avatar.jpg
                   projectUid: ads
                   route: getUserImage
-                  params: '{"id":"123"}'
+                  params: 
+                    id: 123
                   filename: avatar.jpg
                   contentDisposition: INLINE
                   metadata: 
@@ -839,12 +840,7 @@ components:
           description: Базовая часть бизнес-URL
           example: 'note/image/prev'
         params:
-          type: object
-          additionalProperties:
-            type: string
-          description: Карта параметров (значения - строки)
-          examples:
-            - id: '123'
+          $ref: '#/components/schemas/UrlParams'
         businessUrl:
           type: string
           description: 'Канонический бизнес-URL: /{route}?{отсортированные параметры}'
@@ -908,14 +904,7 @@ components:
           description: Базовая часть бизнес-URL
           example: getUserImage
         params:
-          type: string
-          description: |
-            Карта параметров бизнес-URL - JSON-строка, например {"id":"123"}.
-            Все значения приводятся к строкам; дубликаты ключей и пустые имена
-            отклоняются (400). Канонизируется в params_key (сортировка ключей,
-            percent-decoding).
-          example: '{"id":"123"}'
-          default: '{}'
+          $ref: '#/components/schemas/UrlParams'
         filename:
           type: string
           maxLength: 255
@@ -969,6 +958,16 @@ components:
           description: Произвольные метаданные
           example:
             sign: кошечка
+    UrlParams:
+          type: object
+          additionalProperties: true
+          description: |
+            Карта параметров бизнес-URL - JSON-строка, например {"id":"123"}.
+            Все значения приводятся к строкам; дубликаты ключей и пустые имена
+            отклоняются (400). Канонизируется в params_key (сортировка ключей,
+            percent-decoding).
+          example:
+            id: 123
     Error:
       type: object
       description: Ошибка, возвращаемая сервисом
