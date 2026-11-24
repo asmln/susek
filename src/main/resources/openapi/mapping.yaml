@@ -1,0 +1,9 @@
+openapi-processor-mapping: v18
+
+options:
+  package-name: com.asmln.rest
+  bean-validation: jakarta
+
+map:
+  types:
+    - type: string:uuid => java.util.UUID

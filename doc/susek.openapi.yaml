@@ -3,8 +3,6 @@ jsonSchemaDialect: https://spec.openapis.org/oas/3.2/dialect/2026-02-26
 info:
   title: Сусек API
   version: 1.0.0
-  license:
-    name: Internal use only
   summary: Файловое хранилище с бизнес-URL, дедупликацией и логическим разделением по проектам
   description: |
     Сервис централизованного хранения файлов для внутренних сервисов.
