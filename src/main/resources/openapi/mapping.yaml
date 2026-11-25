@@ -3,9 +3,14 @@ openapi-processor-mapping: v18
 options:
   package-name: com.asmln.rest
   bean-validation: jakarta
+  model-type: record
 
 map:
+  result: org.springframework.http.ResponseEntity
+  result-status: false
   types:
     - type: string:uuid => java.util.UUID
+    - type: array => java.util.List  
+    - type: string:date-time => java.time.Instant  
     - type: FileMetadata => tools.jackson.databind.JsonNode  
     - type: UrlParams => tools.jackson.databind.JsonNode  

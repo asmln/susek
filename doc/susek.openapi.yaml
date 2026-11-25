@@ -63,14 +63,14 @@ servers:
   - url: http://localhost:8080/api/v1
     description: Локальная разработка
 tags:
-  - name: projects
+  - name: project
     description: Проекты-владельцы файлов
-  - name: files
+  - name: file
     description: Загрузка, отдача и жизненный цикл файлов
 paths:
   /projects:
     get:
-      tags: [projects]
+      tags: [project]
       operationId: listProjects
       summary: Список проектов
       description: Постраничный список проектов, сортировка по createdAt по возрастанию.
@@ -91,7 +91,7 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
     post:
-      tags: [projects]
+      tags: [project]
       operationId: createProject
       summary: Создание проекта
       description: |
@@ -125,7 +125,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ProjectUid'
     get:
-      tags: [projects]
+      tags: [project]
       operationId: getProject
       summary: Получение проекта по projectUid
       responses:
@@ -143,7 +143,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     patch:
-      tags: [projects]
+      tags: [project]
       operationId: updateProject
       summary: Изменение проекта (переименование, включение/выключение)
       description: |
@@ -176,7 +176,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     delete:
-      tags: [projects]
+      tags: [project]
       operationId: deleteProject
       summary: Удаление проекта (мягкое)
       description: |
@@ -190,7 +190,7 @@ paths:
           $ref: '#/components/responses/NotFound'
   /files:
     post:
-      tags: [files]
+      tags: [file]
       operationId: uploadFile
       summary: Загрузка файла и создание ссылки
       description: |
@@ -256,7 +256,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ProjectFileUid'
     get:
-      tags: [files]
+      tags: [file]
       operationId: downloadFileByUid
       summary: Получение файла по uuid (контент)
       description: |
@@ -296,7 +296,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     head:
-      tags: [files]
+      tags: [file]
       operationId: headFileByUid
       summary: Проверка файла по uuid (без тела)
       description: Те же заголовки, что у GET контента, без тела ответа.
@@ -319,7 +319,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     patch:
-      tags: [files]
+      tags: [file]
       operationId: updateFile
       summary: Изменение ссылки (скрытие, возврат, параметры отдачи)
       description: |
@@ -354,7 +354,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     delete:
-      tags: [files]
+      tags: [file]
       operationId: deleteFile
       summary: Удаление ссылки (мягкое)
       description: |
@@ -371,7 +371,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ProjectFileUid'
     get:
-      tags: [files]
+      tags: [file]
       operationId: getFileMetadata
       summary: Метаданные файла по uuid
       description: |
@@ -396,7 +396,7 @@ paths:
       - $ref: '#/components/parameters/ProjectUid'
       - $ref: '#/components/parameters/BusinessUrl'
     get:
-      tags: [files]
+      tags: [file]
       operationId: downloadFileByBusinessUrl
       summary: Получение файла по бизнес-URL (контент)
       description: |
@@ -444,7 +444,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     head:
-      tags: [files]
+      tags: [file]
       operationId: headFileByBusinessUrl
       summary: Проверка файла по бизнес-URL (без тела)
       description: Те же заголовки, что у GET контента, без тела ответа.
@@ -473,7 +473,7 @@ paths:
         '410':
           $ref: '#/components/responses/Gone'
     put:
-      tags: [files]
+      tags: [file]
       operationId: replaceFileByBusinessUrl
       summary: Создание или замена файла по бизнес-URL (upsert)
       description: |
@@ -789,7 +789,6 @@ components:
               deletedAt: '2026-11-20T09:30:00.500Z'    
         total:
           type: integer
-          format: int64
           description: Всего проектов, удовлетворяющих фильтру
           example: 2
         limit:
@@ -865,7 +864,6 @@ components:
           $ref: '#/components/schemas/FileStatus'
         revision:
           type: integer
-          format: int64
           description: Увеличивается при каждой замене файла за ссылкой (PUT)
           example: 0
         createdAt:
@@ -1007,7 +1005,6 @@ components:
                   format: date-time
                 revision:
                   type: integer
-                  format: int64
   responses:
     BadRequest:
       description: |
